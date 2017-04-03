@@ -1,22 +1,8 @@
 var Wit = require('node-wit').Wit;
 
-// not used at the moment
-var actions = {
-    say: function(sessionId, context, message, cb) {
-        console.log(message);
-        cb();
-    },
-    merge: function(sessionId, context, entities, message, cb) {
-        cb(context);
-    },
-    error: function(sessionId, context, error) {
-        console.log(error.message);
-    }
-};
 
 module.exports = function(config) {
-
-    if (!config || !config.token) {
+    if (!config || !config.accessToken) {
         throw new Error('No wit.ai API token specified');
     }
 
@@ -24,13 +10,40 @@ module.exports = function(config) {
         config.minimum_confidence = 0.5;
     }
 
-    var client = new Wit(config.token, actions);
+    let context = {};
+    let witData = {};
+    const steps = 10;
+
+    const actions = {
+        send(request, response) {
+            console.log('send');
+            const {sessionId, context, entities} = request;
+            const {text, quickreplies} = response;
+            return new Promise(function(resolve, reject) {
+                console.log('sending...', JSON.stringify(response));
+                witData = {response, context};
+                return resolve();
+            });
+        },
+        merge({entities, context, message, sessionId}) {
+            console.log('merge');
+            return new Promise(function(resolve, reject) {
+                delete context.witData;
+                return resolve(context);
+            });
+        },
+    };
+    
+    config.actions = actions;
+
+    var client = new Wit(config);
 
     var middleware = {};
 
     middleware.receive = function(bot, message, next) {
         // Only parse messages of type text and mention the bot.
         // Otherwise it would send every single message to wit (probably don't want that).
+        /*
         if (message.text && message.text.indexOf(bot.identity.id) > -1) {
             client.message(message.text, function(error, data) {
                 if (error) {
@@ -46,9 +59,26 @@ module.exports = function(config) {
         } else {
             next();
         }
+        */
+        if (message.text) {
+            client.runActions(message.channel, message.text, context, steps)
+            .then((ctx) => {
+                context = ctx;
+                message.witData = witData;
+                next();
+            })
+            .catch(err => {
+                console.error(err);
+                next();
+            });
+        }
+        else {
+            next();
+        }
     };
 
     middleware.hears = function(tests, message) {
+        console.log('hears');
         if (message.entities && message.entities.intent) {
             for (var i = 0; i < message.entities.intent.length; i++) {
                 for (var t = 0; t < tests.length; t++) {
