@@ -10,88 +10,87 @@ module.exports = function(config) {
         config.minimum_confidence = 0.5;
     }
 
-    let context = {};
-    let witData = {};
-    const steps = 10;
+    const sessions = {};
 
-    const actions = {
+    function getSession(id) {
+        if (!sessions[id]) {
+            sessions[id] = {id: id, context: {}};
+        }
+        return sessions[id];
+    }
+    function getSessionContext(id) {
+        return getSession(id).context;
+    }
+    function setSessionContext(id, context) {
+        getSession(id).context = context;
+    }
+    function clearResponse(sessionId) {
+        let context = getSessionContext(sessionId);
+        context.response = null;
+    }
+
+    const defaultActions = {
         send(request, response) {
-            console.log('send');
             const {sessionId, context, entities} = request;
             const {text, quickreplies} = response;
             return new Promise(function(resolve, reject) {
                 console.log('sending...', JSON.stringify(response));
-                witData = {response, context};
+                if (!context.response) {
+                    context.response = { text: [], quickreplies: [] }
+                }
+                context.response.text.push(text);
+                if (quickreplies) {
+                    context.response.quickreplies = context.response.quickreplies.concat(quickreplies);
+                }
+                setSessionContext(sessionId, context);
                 return resolve();
             });
         },
         merge({entities, context, message, sessionId}) {
-            console.log('merge');
             return new Promise(function(resolve, reject) {
-                delete context.witData;
+                console.log("merge...");
                 return resolve(context);
             });
         },
     };
     
-    config.actions = actions;
+    config.actions = Object.assign({}, defaultActions, config.actions);
+    let wit = new Wit(config);
 
-    var client = new Wit(config);
-
-    var middleware = {};
-
-    middleware.receive = function(bot, message, next) {
-        // Only parse messages of type text and mention the bot.
-        // Otherwise it would send every single message to wit (probably don't want that).
-        /*
-        if (message.text && message.text.indexOf(bot.identity.id) > -1) {
-            client.message(message.text, function(error, data) {
-                if (error) {
-                    next(error);
-                } else {
-                    message.entities = data.entities;
+    let middleware = {
+        receive(bot, message, next) {
+            if (message.text && message.user !== bot.identity.id) {
+                clearResponse(message.channel);
+                wit.runActions(getSession(message.channel).id, message.text, getSessionContext(message.channel))
+                .then((ctx) => {
+                    message.witData = getSessionContext(message.channel);
                     next();
-                }
-            });
-        } else if (message.attachments) {
-            message.intents = [];
-            next();
-        } else {
-            next();
-        }
-        */
-        if (message.text) {
-            client.runActions(message.channel, message.text, context, steps)
-            .then((ctx) => {
-                context = ctx;
-                message.witData = witData;
+                })
+                .catch(err => {
+                    console.error(err);
+                    next();
+                });
+            }
+            else {
                 next();
-            })
-            .catch(err => {
-                console.error(err);
-                next();
-            });
-        }
-        else {
-            next();
-        }
-    };
-
-    middleware.hears = function(tests, message) {
-        console.log('hears');
-        if (message.entities && message.entities.intent) {
-            for (var i = 0; i < message.entities.intent.length; i++) {
-                for (var t = 0; t < tests.length; t++) {
-                    if (message.entities.intent[i].value == tests[t] &&
-                        message.entities.intent[i].confidence >= config.minimum_confidence) {
-                        return true;
+            }
+        },
+        hears(tests, message) {
+            if (message.entities && message.entities.intent) {
+                for (var i = 0; i < message.entities.intent.length; i++) {
+                    for (var t = 0; t < tests.length; t++) {
+                        if (message.entities.intent[i].value == tests[t] &&
+                            message.entities.intent[i].confidence >= config.minimum_confidence) {
+                            return true;
+                        }
                     }
                 }
             }
-        }
 
-        return false;
+            return false;
+        }
     };
+
 
     return middleware;
 };
